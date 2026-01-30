@@ -1,0 +1,153 @@
+---
+title: "Ch4 Figures for PRIME demonstration"
+output: html_document
+---
+
+```{r set up}
+library(prime)
+library(survival)
+library(readxl)
+library(dplyr)
+set.seed(1234)
+```
+
+Simulate data for Figure 4.3, 4.4 and 4.5
+```{r}
+sim.data <- function(no.int, sm.trt){
+  n <- 200
+  coeff.x1 <- 0.1
+  coeff.x2 <- 0.2
+
+  pthresh <- 0.5
+  thresh <- round(qnorm(pthresh, 0.2, 2), 2)
+
+  # Set treatment/biomarker effects for pthresh = 0.5
+  if (sm.trt == 1) {
+    max.study <- 9.5
+    coeff.trt <- -0.1
+    coeff.biom <- -0.05
+  } else {
+    if (no.int == 1) {
+      max.study <- 8.5
+      coeff.trt <- 0.2
+      coeff.biom <- 0.2
+    } else {
+      max.study <- 8.5
+      coeff.trt <- -0.1 / 3
+      coeff.biom <- 0.1
+    }
+  }
+
+  trt.biom <- ifelse(no.int == 1, 0, -coeff.trt / thresh)
+  beta <- c(trt = coeff.trt, biom = coeff.biom, trt.biom = trt.biom, x1.coef = coeff.x1, x2.coef = coeff.x2)
+
+  seed <- 1450
+  set.seed(seed)
+
+  x <- rnorm(n, 0.2, 2)
+  x1 <- rbinom(n, 1, 0.5)
+  x2 <- round(rnorm(n, 0, 1), 1)
+  z <- rbinom(n, 1, 0.5)
+  zx <- z * x
+  X <- cbind(z, x, zx, x1, x2)
+
+  h0 <- 0.5
+  h <- h0 * exp(X %*% beta)
+  stime <- rexp(n, h)
+
+  C <- runif(n, 0.5, max.study)
+  cstatus <- as.numeric(stime < C)
+  stime <- ifelse(stime > C, C, stime)
+
+  data.1 <- data.frame(time = stime, status = cstatus, z = z, x = x, x1 = x1, x2 = x2)
+  colnames(data.1) <- c("os_time", "os_stat", "trt", "mark", "x1", "x2")
+  data.1 
+}
+```
+
+Figure 4.3
+```{r}
+data.3 <- sim.data(no.int=1, sm.trt=0)
+m.surv.3 <- fit.prime(
+    data = data.3,
+    formula.string = "Surv(os_time, os_stat) ~ trt*(mark)+x1+x2",
+    treatment.variable = "trt",
+    marker.variable = "mark",
+    prediction.time = median(data.3$os_time),
+    conf.level = 0.95
+  )
+
+plot(m.surv.3, plot.type = "risk", main.xaxis = "marker")
+```
+
+Figure 4.4
+```{r}
+data.4 <- sim.data(no.int=0, sm.trt=0)
+m.surv.4 <- fit.prime(
+    data = data.4,
+    formula.string = "Surv(os_time, os_stat) ~ trt*(mark)+x1+x2",
+    treatment.variable = "trt",
+    marker.variable = "mark",
+    prediction.time = median(data.4$os_time),
+    conf.level = 0.95
+  )
+
+plot(m.surv.4, plot.type = "risk", main.xaxis = "marker")
+```
+
+Figure 4.5
+```{r}
+data.5 <- sim.data(no.int=0, sm.trt=1)
+m.surv.5 <- fit.prime(
+    data = data.5,
+    formula.string = "Surv(os_time, os_stat) ~ trt*(mark)+x1+x2",
+    treatment.variable = "trt",
+    marker.variable = "mark",
+    prediction.time = median(data.5$os_time),
+    conf.level = 0.95
+  )
+
+plot(m.surv.5, plot.type = "risk", main.xaxis = "marker")
+```
+
+Figure 4.8
+```{r}
+data_poplar <- read_excel("../data/41591_2018_134_MOESM3_ESM.xlsx", 
+                          sheet = "POPLAR_Clinical_Data")
+
+## keep only available data // this exploration if for illustration purpose only
+
+data_poplar.btmb <- data_poplar %>% 
+  #filter NA data 
+  filter(btmb != ".") %>% 
+  mutate(btmb = as.numeric(btmb)) %>%
+  mutate(PFS.EVENT=1-PFS.CNSR) %>% 
+  mutate(TRT01P=ifelse(TRT01P=="Docetaxel",0,1))
+
+prime.btmb <- fit.prime(data=data_poplar.btmb,
+                        formula.string="Surv(PFS, PFS.EVENT) ~ btmb + TRT01P + btmb*TRT01P +
+                       BAGE+race2+SEX+HIST+ECOGGR+PRIORTX+TOBHX+METSITES",
+                        treatment.variable="TRT01P",
+                        marker.variable="btmb",
+                        prediction.time = 2.83,
+                        conf.level = 0.95)
+plot(prime.btmb, plot.type="risk",trt.names=c("MPDL3280A","Docetaxel"),
+     marker.name="bTMB")
+```
+Get theoretical threshold
+
+```{r}
+theo.cutoff(prime.btmb)
+```
+
+Get empirical thresholds
+```{r}
+emp.cutoff(prime.btmb)
+```
+
+Net gain using interpolated threshold assuming default treatment rule is treat all
+```{r}
+net.gain(prime.btmb, cutoff=emp.cutoff(prime.btmb)$Value[1],
+         cutoff.sign=emp.cutoff(prime.btmb)$Sign[1],
+         default.trt=1)
+```
