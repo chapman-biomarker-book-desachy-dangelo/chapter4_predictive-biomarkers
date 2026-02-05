@@ -1,0 +1,318 @@
+---
+title: "Application of AKSA methodology on example"
+output: 
+  html_document:
+    code_folding: show
+    theme:
+      base_font:
+        google: Prompt
+      heading_font:
+        google: Proza Libre
+---
+
+```{r setup, include=FALSE}
+if (requireNamespace("thematic")) 
+  thematic::thematic_rmd(font = "auto")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.showtext = TRUE, comment = NA) 
+
+```
+
+```{r github AKSA, include=FALSE}
+##Clone github repo from AKSA - Stat in med paper
+#install.packages("usethis")
+#usethis::create_from_github("aspapercode/predVal", protocol = "https", rstudio = FALSE,
+#                            destdir = "/home/JAGE_CB/BOOK/predictive_chapter")
+
+
+##Important function for AKSA evaluation
+```
+
+```{r}
+##Package to install 
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(dplyr)
+library(brglm2)
+library(detectseparation)
+```
+
+## Data import
+
+In order to illustrate methodology application, We'll use data from POPLAR study.[Gandara, et al](https://www.nature.com/articles/s41591-018-0134-3) explored the predictiveness of blood TMB (bTMB) in atezolisumab vs docetaxel.  
+
+```{r}
+data_poplar <- read_excel("../data/41591_2018_134_MOESM3_ESM.xlsx", 
+                       sheet = "POPLAR_Clinical_Data")
+
+## keep only available data // this exploration if for illustration purpose only
+## I do not recommend to evaluate BMK predictivness on complete data only /*\
+
+data_poplar <- data_poplar %>% 
+#filter NA data 
+  filter(BCOR != ".") %>% 
+  filter(TRT01P != ".") %>% 
+  filter(btmb != ".") %>% 
+  filter(BCOR != "NE") %>% 
+  mutate(btmb = as.numeric(btmb)) %>% 
+#combute combined answer by merging PD and SD patients
+  mutate(OR = case_when(
+  BCOR == "PD" ~ "PD+SD",
+  BCOR == "SD" ~ "PD+SD",
+  BCOR == "PR" ~ "PR")) %>%
+#Create a binary end-point for logistic regression // 1 = responder
+  mutate(ORbin = case_when(
+  BCOR == "PD" ~ 0,
+  BCOR == "SD" ~ 0,
+  BCOR == "PR" ~ 1)
+)
+
+summary(data_poplar)
+```
+
+
+## eTMB according to traitement and response
+
+Objective is to explore bTMB predictiveness: evaluate if the probability of being a responder is significantly associated to bTMB according to treatment arm. 
+
+
+```{r}
+
+##bTMB according to BCOR
+ggboxplot(data_poplar, "BCOR", "btmb", fill = "TRT01P",
+          color = "TRT01P", palette =c("#00AFBB", "#E7B800"),
+          add = "jitter")+
+            ggtitle("bTMB according to treatment and response BCOR")
+
+##bTMB according to combined BCOR
+ggboxplot(data_poplar, "OR", "btmb", fill = "TRT01P",
+          color = "TRT01P", palette =c("#00AFBB", "#E7B800"),
+          add = "jitter")+
+            ggtitle("bTMB according to treatment and response combined BCOR")
+
+
+
+```
+
+
+## Probability of being a PR per treatment arm
+
+```{r}
+
+##fit a logistic regression based on intercation 
+modelfull <- glm(ORbin ~ btmb + TRT01P + btmb*TRT01P, family = "binomial", data = data_poplar)
+summary(modelfull)$coef
+
+##draw the 2 curves + IC
+logfit <- ggplot(data = data_poplar, aes(btmb, ORbin, fill = TRT01P, color = TRT01P)) +
+  geom_point(alpha = .15) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"),  fullrange = TRUE) +
+  ggtitle("Logistic regression model fit") +
+  xlab("bTMB") +
+  ylab("Probability of being PR") +
+  scale_fill_manual(values = c("darkcyan", "goldenrod")) +
+    scale_color_manual(values = c("darkcyan", "goldenrod")) +
+    theme_bw() 
+
+logfit
+
+ggsave(filename = "logfit_poplar.png", plot = logfit, width = 8, height = 6)
+
+```
+
+
+
+```{r}
+
+###AKSA illustration:
+
+    # Obtain predicted values and se for 100 plausible bTMB for each treatment arm 
+    btmb <- seq(min(data_poplar$btmb), max(data_poplar$btmb), length.out = 100)
+    pred1 <- predict(modelfull, newdata = data.frame(btmb, TRT01P = "Docetaxel"), se.fit = TRUE)
+    pred2 <- predict(modelfull, newdata = data.frame(btmb, TRT01P = "MPDL3280A"), se.fit = TRUE)
+
+    # Calculate the contrast and its confidence interval
+    contrast <- pred2$fit - pred1$fit
+    se.constrat <- sqrt(pred1$se.fit^2 + pred2$se.fit^2)
+    lwr.contrast <- contrast - qnorm(1 - 0.025) * se.constrat
+    upr.contrast <- contrast + qnorm(1 - 0.025) * se.constrat
+    
+    # Randomly select couple of points in real value of bTMB
+    max_contrast <- sample(1:length(btmb), 10000, replace=T)
+    min_contrast <- sample(1:length(btmb), 10000, replace=T)
+    
+    # Compute contrast difference between the lowest and highest value of each couple 
+    diff <- contrast[pmax(min_contrast, max_contrast)] - contrast[pmin(min_contrast, max_contrast)]
+    se.diff <- sqrt(se.constrat[min_contrast]^2 + se.constrat[max_contrast]^2)
+    
+    # Select values in each difference distribution
+    y <- rnorm(10000, mean=diff, sd=se.diff)
+
+    # Prob that the Diff bw the contrasts is above 0
+    mean(y > 0)
+    
+    # Density of differences
+
+    dens <- density(y)
+    dens_df <- data.frame(x = dens$x, y = dens$y)
+    
+    ggplot() +
+      geom_area(data = filter(dens_df, x < 0), aes(x = x, y = y), fill = "darkcyan", alpha = 0.5) +  # à gauche de 0
+      geom_area(data = filter(dens_df, x >= 0), aes(x = x, y = y), fill = "goldenrod", alpha = 0.5) +  # à droite de 0
+      #geom_line(data = dens_df, aes(x = x, y = y), color = "darkcyan") +  # courbe de densité
+      geom_vline(xintercept = 0, color = "goldenrod", lwd = 1, lty = 2) +  # ligne verticale
+      labs(x = "y", y = "density") +
+      theme_bw()
+    
+
+```
+
+
+Then, we can evaluate the probability of $\Delta$ to be over any marked difference :
+
+```{r}
+   #Plot de proba 
+  
+    proba_md <- 1:100
+    cutoff <- seq(from = -4, to = 4, length.out = 100)
+      
+    for (i in 1:100){proba_md[i] <-  mean(y > cutoff[i]) }
+    
+    proba <- data.frame(prob = proba_md, cutoff = cutoff)
+    
+    ggplot(proba) +
+      geom_line(aes(x = cutoff, y = prob), color = "darkcyan", lwd = 2) +
+      labs(y= "Probability", 
+           x = "test")+
+      theme(axis.title=element_text(size=10)) +
+      geom_vline(xintercept = 0, color = "goldenrod", lwd = 1, lty=2) +
+      geom_vline(xintercept = 0.4, color = "goldenrod", lwd = 1, lty=2) +
+      geom_vline(xintercept = 1, color = "goldenrod", lwd = 1, lty=2)
+      
+
+```
+
+
+
+```{r}
+#library(ggplot2)
+library(cowplot)
+
+##theme for plots 
+
+theme_publication <- theme_bw() +
+  theme(
+    # Titres
+    plot.title = element_text(size = 9, hjust = 0.5),
+    axis.title = element_text(size = 8, ),
+    axis.text  = element_text(size = 8),
+    
+    # Légende
+    legend.title = element_text(size = 7),
+    legend.text  = element_text(size = 6),
+    legend.position = "right",   # ou "bottom" si tu veux compacte
+    legend.key.size = unit(0.6, "cm"), # réduit la taille des symboles
+    
+    # Marges
+    plot.margin = margin(3, 3, 3, 3)
+  )
+
+   #Plot for predictive chapter 
+
+  ##Logistic fit and observed value on poplar study 
+
+logfit_bw <-ggplot(data = data_poplar, aes(btmb, ORbin, fill = TRT01P, color = TRT01P)) +
+  geom_point(alpha = .15) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"),  fullrange = TRUE) +
+  ggtitle("Probability of response according to bTMB") +
+  xlab("bTMB") +
+  ylab("Probability of being PR") +
+  scale_fill_manual(values = c("grey", "black")) +
+  scale_color_manual(values = c("grey", "black")) +
+  theme_publication
+
+
+  ##Density of differences and probability of difference being above or below zero
+
+p_left  <- 0.15   # 
+p_right <- 0.85   # 
+
+dens_df <- dens_df %>%
+  mutate(region = ifelse(x < 0, "left", "right"))
+  
+  
+diffdensity <- ggplot() +
+  geom_area(data = filter(dens_df, x < 0), 
+            aes(x = x, y = y, fill = "left"), alpha = 0.5) +
+  geom_area(data = filter(dens_df, x >= 0), 
+            aes(x = x, y = y, fill = "right"), alpha = 0.5) +
+  geom_vline(xintercept = 0, color = "black", lwd = 0.8, lty = 2) +
+    ggtitle("Distribution of the difference") +
+  labs(x = "y", y = "density") +
+  scale_fill_manual(
+    values = c("left" = "grey70", "right" = "black"),
+    labels = c(
+      bquote(P(Delta < 0) == .(round(p_left, 3))),
+      bquote(P(Delta >= 0) == .(round(p_right, 3)))
+    ),
+    name = "Probability"
+  ) +
+  xlab(expression(Delta)) +
+ theme_publication
+
+
+##probability plot:
+vlines <- data.frame(
+  cutoff = c(0, 1, 2),
+  label  = c("0", "1", "2")
+)
+
+  probaplot <- 
+ggplot(proba) +
+  geom_line(aes(x = cutoff, y = prob), 
+            color = "black", lwd = 1) +
+  labs(y = "Probability", x = "thresholds") +
+#  theme(axis.title = element_text(size = 10)) +
+  geom_vline(data = vlines, 
+             aes(xintercept = cutoff, linetype = label), 
+             color = "black", lwd = 0.8) +
+  scale_linetype_manual(
+    values = c("dashed", "dotdash", "dotted"),
+    labels = c(
+      expression(P(Delta  >=  0) == 0.85),
+      expression(P(Delta  >=  1) == 0.7),
+      expression(P(Delta  >=  2) == 0.53)
+    )
+  ) +
+     ggtitle(expression("Probability that " * Delta * "  exceeds given thresholds")) +
+  theme_publication +
+  labs(linetype = "Probability thresholds")
+
+# Combining 3 plots
+#combined_plot <- plot_grid(logfit_bw, diffdensity, probaplot,
+#                           labels = c("A", "B", "C"),   
+#                           ncol = 2, align = "h")       
+
+combined_plot1 <- plot_grid(diffdensity, probaplot, 
+                           labels = c("B", "C"),   # ajoute A, B, C
+                           ncol = 2, align = "h")       # côte à côte
+
+combined_plot2 <- plot_grid(logfit_bw, combined_plot1,
+                           labels = c("A", ""),   # ajoute A, B, C
+                           nrow = 2, align = "h")       # côte à côte
+# Titre global
+title <- ggdraw() + 
+  draw_label("AKSA application on POPLAR database", fontface = 'bold', x = 0.5, hjust = 0.5, size = 10)
+
+final_plot <- plot_grid(title, combined_plot2, ncol = 1, rel_heights = c(0.1, 1))
+
+
+# Affichage
+final_plot
+
+# Sauvegarde
+ggsave("combined_plot.png", final_plot, width = 8, height = 8, dpi = 300)
+
+
+```
+
